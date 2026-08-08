@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inferbench"
+version = "0.1.0"
+description = "Load test for LLM inference endpoints: sustained QPS, TTFT/E2E percentiles, prefix-cache hit rate, and the goodput knee."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Asad Ismail" }]
+keywords = ["llm", "inference", "serving", "latency", "throughput", "load-testing", "prefix-cache"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["httpx>=0.24"]
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.6", "numpy>=1.23"]
+
+[tool.setuptools]
+packages = ["inferbench"]

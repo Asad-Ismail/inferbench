@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.venv/
+venv/
+env/
+.env
+.env.*
+.python-version
+
+# Secrets / credentials
+*.pem
+*.key
+credentials*
+secrets*
+*.p12
+*.pfx
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local / generated outputs (do not publish run artifacts)
+docs/data/
+docs/figures/
+*.csv
+*.png
+*.jsonl
+results/
+out/
+output/
+logs/
+*.log
+
+# Test / type / cache tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.cache/
