@@ -9,8 +9,12 @@ description = "Load test for LLM inference endpoints: sustained QPS, TTFT/E2E pe
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Asad Ismail" }]
+authors = [{ name = "Asad Ismail", email = "asadismaeel@gmail.com" }]
 keywords = ["llm", "inference", "serving", "latency", "throughput", "load-testing", "prefix-cache"]
+
+[project.urls]
+Homepage = "https://github.com/Asad-Ismail/inferbench"
+Repository = "https://github.com/Asad-Ismail/inferbench"
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
