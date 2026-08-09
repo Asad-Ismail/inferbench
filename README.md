@@ -1,7 +1,7 @@
 # Inferbench
 
 <p align="center">
-  <img src="assets/logo.png" alt="Inferbench logo" width="120">
+  <img src="assets/inferbench-logo.png" alt="Inferbench logo" width="120">
 </p>
 
 Load test for LLM inference endpoints. Reports sustained QPS, TTFT/E2E percentiles, prefix-cache hit rate, and the goodput knee.
