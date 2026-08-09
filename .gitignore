@@ -36,6 +36,7 @@ docs/data/
 docs/figures/
 *.csv
 *.png
+!assets/*.png
 *.jsonl
 results/
 out/

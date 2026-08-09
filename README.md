@@ -1,8 +1,14 @@
 # Inferbench
 
+<p align="center">
+  <img src="assets/logo.png" alt="Inferbench logo" width="120">
+</p>
+
 Load test for LLM inference endpoints. Reports sustained QPS, TTFT/E2E percentiles, prefix-cache hit rate, and the goodput knee.
 
 Open-loop fires requests at a target QPS regardless of how slow the server is (arrival-driven capacity); closed-loop keeps N concurrent conversations in flight and only issues the next turn when one finishes (`run.py`). Prefer open-loop (`run_openloop.py`) for the goodput knee.
+
+If you find this useful, [star the repo](https://github.com/Asad-Ismail/inferbench) or share it with someone sizing LLM serving.
 
 ## Install
 
