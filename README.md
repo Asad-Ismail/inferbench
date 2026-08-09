@@ -23,7 +23,9 @@ export MYAPI_MODEL="your-model"
 export MYAPI_API_KEY="sk-..."
 
 python3 inferbench/run_openloop.py --provider myapi --mode real \
-    --arrival poisson --seed 7 --dur 120 --levels 2,4,6,8,10 --fixed-dist --stop-on-explode
+    --arrival poisson --seed 7 --dur 600 --warmup 60 \
+    --drain-grace 90 --slo-e2e-ms 60000 \
+    --levels 2,4,6,8,10 --fixed-dist --stop-on-explode
 ```
 
 Output includes `Offer`, `Sched`, `N`, `GDrop`, `LagP95`, `LagMax`, `Done@T`, `CompQPS`, `B@T`, `dB`, `Drain`, `Pending@G`, `SLOQPS`, and latency/error columns. `GDrop` is an overdue arrival dropped by the load generator rather than burst-fired late; any drop halts the ramp. `CompQPS` is successful completions during the fixed post-warm-up offer window, not completions divided by an unbounded drain. `B@T` is all in-flight work when arrivals stop, including warm-up requests; `dB` is total backlog growth across the measurement window. `Pending@G` is work still pending after `--drain-grace`; strict mode halts on any pending request. Set `--slo-e2e-ms` to report per-request SLO goodput.
