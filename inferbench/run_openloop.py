@@ -1,14 +1,16 @@
 """Open-loop QPS ramp.
 
 Poisson (or uniform) arrivals at fixed offered-QPS targets, multi-turn conversations with
-optional session affinity, measuring sustained QPS / TTFT / E2E / cache-hit / errors per level.
+optional session affinity, measuring fixed-window completion QPS, bounded drain,
+optional SLO goodput, TTFT/E2E, cache-hit, and errors per level.
 Reuses workload.py + providers.py (streams usage incl. cached_tokens).
 
 Usage:
   python run_openloop.py --provider myapi --role heavy --mode real --affinity \
     --levels 0.5,1,2,3,4,6 --dur 40 --scale 1.0
 """
-import argparse, asyncio, time, random, math, sys
+import argparse, asyncio, csv, json, time, random, math, sys
+from pathlib import Path
 import httpx
 
 try:
@@ -30,13 +32,30 @@ def pending_tolerance(offered, max_pending_frac):
     """Pending requests allowed after grace; zero is strict."""
     return math.ceil(max_pending_frac * offered)
 
-def level_is_clean(row, rate_key, max_pending_frac):
-    """Whether a level is eligible for an automatic knee."""
-    return (row["err"] == 0
-            and row["generator_dropped"] == 0
-            and row["pending_after_grace"] <= pending_tolerance(row["offered"], max_pending_frac)
-            and row["backlog_growth"] <= max(2, math.ceil(0.05 * row["offered"]))
-            and (row[rate_key] or 0) >= 0.85 * row["qps"])
+def write_rows(path, rows, append=False):
+    """Write one structured result record per offered QPS level."""
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix not in {".csv", ".json", ".jsonl"}:
+        raise ValueError("--out must end in .csv, .json, or .jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if suffix == ".csv":
+        fields = list(dict.fromkeys(key for row in rows for key in row))
+        exists = append and path.exists() and path.stat().st_size > 0
+        with path.open("a" if append else "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            if not exists:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow({k: json.dumps(v, sort_keys=True) if isinstance(v, dict) else v
+                                 for k, v in row.items()})
+    elif suffix == ".jsonl":
+        with path.open("a" if append else "w") as f:
+            for row in rows:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
+    else:
+        existing = json.loads(path.read_text()) if append and path.exists() else []
+        path.write_text(json.dumps([*existing, *rows], indent=2, sort_keys=True) + "\n")
 
 class Conv:
     _n = 0
@@ -166,12 +185,17 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
           f"{ms(pct(st['ttft'],.5)):>8s} | {ms(pct(st['ttft'],.95)):>8s} | {ms(pct(st['ttft'],.99)):>8s} | "
           f"{ms(pct(st['e2e'],.5)):>8s} | {ms(pct(st['e2e'],.95)):>9s} | {ms(pct(st['e2e'],.99)):>9s} | "
           f"{(out_p50 or 0):>7.0f} | {(pct(st['hit'],.5) or 0):>9.3f} | {errstr:>6s}", flush=True)
-    return {"qps":qps,"completion_qps":completion_qps,"goodput_qps":goodput_qps,
+    return {"offered_qps":qps,"completion_qps":completion_qps,"goodput_qps":goodput_qps,
             "backlog_end":backlog_end,"backlog_growth":backlog_growth,
-            "drain_seconds":drain_seconds,"pending_after_grace":len(pending),
+            "drain_s":drain_seconds,"pending_after_grace":len(pending),
             "scheduled":st["scheduled"],"generator_dropped":st["generator_dropped"],
-            "e2e_p95":pct(st["e2e"],.95),"err":err,"out_max":out_max,
-            "in_mean":in_mean,"cache":pct(st["hit"],.5),"ttft_p50":pct(st["ttft"],.5),
+            "arrival_lag_p95_ms":(lag_p95 * 1000.0) if lag_p95 is not None else None,
+            "arrival_lag_max_ms":(lag_max * 1000.0) if lag_max is not None else None,
+            "ttft_p50_s":pct(st["ttft"],.5),"ttft_p95_s":pct(st["ttft"],.95),"ttft_p99_s":pct(st["ttft"],.99),
+            "e2e_p50_s":pct(st["e2e"],.5),"e2e_p95_s":pct(st["e2e"],.95),"e2e_p99_s":pct(st["e2e"],.99),
+            "error_count":err,"error_counts":errors,
+            "output_tokens_p50":out_p50,"output_tokens_max":out_max,
+            "input_tokens_p50":in_p50,"input_tokens_mean":in_mean,"cache_hit_p50":pct(st["hit"],.5),
             "offered":offered,"completed_by_end":len(ok_at_end)}
 
 async def main():
@@ -198,6 +222,10 @@ async def main():
                     help="arrival-lag budget in mean inter-arrivals; effective=max(floor, intervals*1000/qps)")
     ap.add_argument("--max-pending-frac",type=float,default=0.0,
                     help="strict default: any pending request halts; positive value is diagnostic only")
+    ap.add_argument("--out",
+                    help="write per-level results to .csv, .jsonl, or .json")
+    ap.add_argument("--append",action="store_true",
+                    help="append results to --out (useful when running multiple seeds)")
     ap.add_argument("--stop-on-explode",dest="stop_on_explode",action="store_true",
                     help="halt the ramp after the first level that truly congests (errors, or E2E p95 blowup)")
     ap.add_argument("--explode-e2e-ms",dest="explode_e2e_ms",type=float,default=45000,
@@ -238,6 +266,12 @@ async def main():
                                   drain_grace=a.drain_grace, slo_e2e_ms=a.slo_e2e_ms,
                                   max_arrival_lag_ms=a.max_arrival_lag_ms,
                                   max_arrival_lag_intervals=a.max_arrival_lag_intervals)
+            row.update({
+                "seed": a.seed, "role": a.role, "mode": a.mode, "arrival": a.arrival,
+                "duration_s": a.dur, "warmup_s": a.warmup, "drain_grace_s": a.drain_grace,
+                "slo_e2e_ms": a.slo_e2e_ms, "fixed_dist": a.fixed_dist,
+                "max_pending_frac": a.max_pending_frac,
+            })
             rows.append(row)
             pend_tol = pending_tolerance(row["offered"], a.max_pending_frac)
             if row["pending_after_grace"] > pend_tol:
@@ -249,27 +283,17 @@ async def main():
                       f"{row['generator_dropped']} overdue arrivals dropped. Halting ramp. ***", flush=True)
                 break
             if a.stop_on_explode:
-                e95 = row.get("e2e_p95")
+                e95 = row.get("e2e_p95_s")
                 e95_ms = (e95 * 1000) if e95 is not None else 0.0
-                if row["err"] >= a.explode_errs or e95_ms >= a.explode_e2e_ms:
-                    why = (f"errors={row['err']} (>= {a.explode_errs})" if row["err"] >= a.explode_errs
+                if row["error_count"] >= a.explode_errs or e95_ms >= a.explode_e2e_ms:
+                    why = (f"errors={row['error_count']} (>= {a.explode_errs})" if row["error_count"] >= a.explode_errs
                            else f"E2E p95={e95_ms:.0f}ms (>= {a.explode_e2e_ms:.0f}ms)")
                     print(f"\n*** EXPLODE at offered {lv} QPS: {why}. Halting ramp -- higher levels skipped. ***",
                           flush=True)
                     break
-    rate_key = "goodput_qps" if a.slo_e2e_ms is not None else "completion_qps"
-    good=[r for r in rows if level_is_clean(r, rate_key, a.max_pending_frac)]
-    if good:
-        knee=max(good,key=lambda r:r["qps"])
-        s=knee[rate_key] or 0.0
-        print(f"\nfixed-window knee: offered {knee['qps']} -> {rate_key} {s:.3f} QPS")
-        if a.max_pending_frac > 0:
-            print("  Diagnostic pending tolerance enabled: fleet sizing suppressed.")
-        else:
-            GPUS_PER_REPLICA = 4
-            for tgt in [1, 5, 10, 20]:
-                reps=math.ceil(tgt/s) if s>0 else 0
-                print(f"  {tgt:>6.1f} QPS -> {reps:>4} replicas / {reps*GPUS_PER_REPLICA:>5} GPUs (linear; add imbalance headroom)")
+    if a.out:
+        write_rows(a.out, rows, append=a.append)
+        print(f"\nWrote {len(rows)} level result(s) to {a.out}")
     print("\n---DONE---")
 
 if __name__ == "__main__":

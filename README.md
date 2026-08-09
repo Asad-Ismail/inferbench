@@ -4,7 +4,7 @@
   <img src="assets/inferbench-logo.png" alt="Inferbench logo" width="120">
 </p>
 
-Load test for LLM inference endpoints. Reports fixed-window completion QPS, bounded-drain diagnostics, optional SLO goodput, TTFT/E2E percentiles, prefix-cache hit rate, and the goodput knee.
+Load test for LLM inference endpoints. Reports fixed-window completion QPS, bounded-drain diagnostics, optional SLO goodput, TTFT/E2E percentiles, prefix-cache hit rate, and a structured response curve.
 
 Open-loop fires requests at a target QPS regardless of how slow the server is (arrival-driven capacity); closed-loop keeps N concurrent conversations in flight and only issues the next turn when one finishes (`run.py`). Prefer open-loop (`run_openloop.py`) for the goodput knee.
 
@@ -25,12 +25,15 @@ export MYAPI_API_KEY="sk-..."
 python3 inferbench/run_openloop.py --provider myapi --mode real \
     --arrival poisson --seed 7 --dur 600 --warmup 60 \
     --drain-grace 90 --slo-e2e-ms 60000 \
-    --levels 2,4,6,8,10 --fixed-dist --stop-on-explode
+    --levels 2,4,6,8,10 --fixed-dist --stop-on-explode \
+    --out results-seed-7.jsonl
 ```
 
 Output includes `Offer`, `Sched`, `N`, `GDrop`, `LagP95`, `LagMax`, `Done@T`, `CompQPS`, `B@T`, `dB`, `Drain`, `Pending@G`, `SLOQPS`, and latency/error columns. `GDrop` is an overdue arrival dropped by the load generator rather than burst-fired late; any drop halts the ramp. `CompQPS` is successful completions during the fixed post-warm-up offer window, not completions divided by an unbounded drain. `B@T` is all in-flight work when arrivals stop, including warm-up requests; `dB` is total backlog growth across the measurement window. `Pending@G` is work still pending after `--drain-grace`; strict mode halts on any pending request. Set `--slo-e2e-ms` to report per-request SLO goodput.
 
-Ends with the goodput knee and a fleet-size estimate. Reverse `--levels` to confirm order doesn't matter.
+Structured output uses explicit field units: latency and duration columns end in `_s`, arrival-lag columns end in `_ms`, token columns include `_tokens`, and throughput columns end in `_qps`.
+
+Inferbench does not choose a knee or fleet size. The result rows are the measurement; select an operating point with your own SLOs for TTFT, E2E, error rate, backlog, and cost.
 
 ## Useful flags
 
@@ -45,6 +48,8 @@ Ends with the goodput knee and a fleet-size estimate. Reverse `--levels` to conf
 | `--max-arrival-lag-ms` | `50` | Absolute floor (ms) for arrival-lag budget |
 | `--max-arrival-lag-intervals` | `1.0` | Lag budget in mean inter-arrivals |
 | `--max-pending-frac` | `0` | Strict default; positive value is diagnostic only |
+| `--out` | off | Write per-level rows to `.csv`, `.jsonl`, or `.json` |
+| `--append` | off | Append to `--out`, useful for multiple seeds |
 | `--seed` | `7` | Repeat across seeds for a defensible p95 |
 | `--arrival` | `uniform` | `poisson` or `uniform` |
 | `--mode` | `real` | Cache breaks: `real` / `fixed` (never) / `broken` (every turn) |
@@ -61,6 +66,16 @@ Env: `INFERBENCH_CACHE_FRACTION` (default `0.59`), `INFERBENCH_REASONING_EFFORT`
 
 `--dur` tip: use `--warmup 30–60`, then hold until you have ~1k steady-state completions and stable backlog. A level is not sustained merely because requests eventually drain after arrivals stop.
 
+## Multi-seed summary
+
+Run each seed into a separate structured output, then summarize the curve without applying a policy:
+
+```bash
+python -m inferbench.summarize results-seed-*.jsonl --out summary.csv
+```
+
+The summary reports run count plus median, minimum, maximum, and spread for every numeric metric at each offered QPS. It does not grade SLOs or select a knee.
+
 ## Scripts
 
 | Script | Role |
@@ -70,6 +85,7 @@ Env: `INFERBENCH_CACHE_FRACTION` (default `0.59`), `INFERBENCH_REASONING_EFFORT`
 | `scaling_probe.py` | Prefill TTFT vs context length |
 | `decode_probe.py` | Decode tok/s |
 | `run.py` | Closed-loop concurrency ramp |
+| `summarize.py` | Cross-seed median/min/max/spread; no policy grading |
 | `validate_comp.py` | Smoke-check warm-turn cache-hit under affinity |
 | `workload.py` | Size distribution + cache composition (`ROLE_PROFILES`) |
 | `providers.py` | OpenAI-compatible client + registry |

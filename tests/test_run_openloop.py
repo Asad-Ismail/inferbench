@@ -4,10 +4,12 @@ import contextlib
 import io
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from inferbench import run_openloop as R
+from inferbench import summarize as S
 from inferbench import workload as W
 
 W.SIZE_SCALE = 0.002
@@ -45,7 +47,7 @@ def run(**kw):
 def test_finish_in_window():
     result = run(provider=FakeProvider(latency=0.02))
     assert result["offered"] > 0
-    assert result["err"] == 0
+    assert result["error_count"] == 0
     assert result["generator_dropped"] == 0
     assert result["pending_after_grace"] == 0
     assert result["scheduled"] == result["offered"] + result["generator_dropped"]
@@ -56,7 +58,7 @@ def test_tail_finishes_during_grace():
     result = run(provider=FakeProvider(latency=0.4), qps=20.0)
     assert result["pending_after_grace"] == 0
     assert result["completed_by_end"] < result["offered"]
-    assert result["drain_seconds"] > 0
+    assert result["drain_s"] > 0
 
 
 def test_pending_after_grace():
@@ -81,21 +83,34 @@ def test_slo_boundary():
 
 def test_errors_and_warmup():
     errors = run(provider=FakeProvider(ok=False, code="503"))
-    assert errors["err"] == errors["offered"] > 0
+    assert errors["error_count"] == errors["offered"] > 0
     assert errors["completion_qps"] == 0.0
     full = run(qps=10.0, dur=2.0)
     warm = run(qps=10.0, dur=2.0, warmup=1.0)
     assert 0 < warm["offered"] < full["offered"]
 
 
-def test_strict_and_diagnostic_pending_policy():
+def test_strict_and_diagnostic_pending_tolerance():
     assert R.pending_tolerance(1920, 0.0) == 0
     assert R.pending_tolerance(1920, 0.01) == 20
-    row = dict(qps=5.0, err=0, generator_dropped=0, pending_after_grace=0,
-               backlog_growth=0, offered=1000, completion_qps=4.8, goodput_qps=4.8)
-    assert R.level_is_clean(row, "completion_qps", 0.0)
-    assert not R.level_is_clean({**row, "pending_after_grace": 1}, "completion_qps", 0.0)
-    assert R.level_is_clean({**row, "pending_after_grace": 10}, "completion_qps", 0.01)
+
+
+def test_structured_output_and_cross_seed_summary():
+    rows = [
+        {"offered_qps": 4.0, "seed": 1, "completion_qps": 3.8, "e2e_p95_s": 1.2, "error_counts": {}},
+        {"offered_qps": 4.0, "seed": 2, "completion_qps": 3.6, "e2e_p95_s": 1.4, "error_counts": {}},
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        csv_path = os.path.join(directory, "results.csv")
+        jsonl_path = os.path.join(directory, "results.jsonl")
+        R.write_rows(csv_path, rows)
+        R.write_rows(jsonl_path, rows)
+        assert len(S.read_rows([csv_path])) == 2
+        summary = S.summarize(S.read_rows([jsonl_path]))
+    assert summary[0]["runs"] == 2
+    assert summary[0]["offered_qps"] == 4.0
+    assert summary[0]["completion_qps_median"] == 3.7
+    assert round(summary[0]["e2e_p95_s_spread"], 6) == 0.2
 
 
 if __name__ == "__main__":
