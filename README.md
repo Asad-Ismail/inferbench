@@ -4,7 +4,7 @@
   <img src="assets/inferbench-logo.png" alt="Inferbench logo" width="120">
 </p>
 
-Load test for LLM inference endpoints. Reports sustained QPS, TTFT/E2E percentiles, prefix-cache hit rate, and the goodput knee.
+Load test for LLM inference endpoints. Reports fixed-window completion QPS, bounded-drain diagnostics, optional SLO goodput, TTFT/E2E percentiles, prefix-cache hit rate, and the goodput knee.
 
 Open-loop fires requests at a target QPS regardless of how slow the server is (arrival-driven capacity); closed-loop keeps N concurrent conversations in flight and only issues the next turn when one finishes (`run.py`). Prefer open-loop (`run_openloop.py`) for the goodput knee.
 
@@ -26,11 +26,7 @@ python3 inferbench/run_openloop.py --provider myapi --mode real \
     --arrival poisson --seed 7 --dur 120 --levels 2,4,6,8,10 --fixed-dist --stop-on-explode
 ```
 
-Example row (latencies in ms):
-
-| QPS | Sustained | In p50 | In mean | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 | Out p50 | Cache | N | Err |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 4.00 | 3.59 | 80k | 110k | 6000 | 20000 | 32000 | 10000 | 25000 | 43000 | 170 | 0.80 | 650 | 0 |
+Output includes `Offer`, `Sched`, `N`, `GDrop`, `LagP95`, `LagMax`, `Done@T`, `CompQPS`, `B@T`, `dB`, `Drain`, `Pending@G`, `SLOQPS`, and latency/error columns. `GDrop` is an overdue arrival dropped by the load generator rather than burst-fired late; any drop halts the ramp. `CompQPS` is successful completions during the fixed post-warm-up offer window, not completions divided by an unbounded drain. `B@T` is all in-flight work when arrivals stop, including warm-up requests; `dB` is total backlog growth across the measurement window. `Pending@G` is work still pending after `--drain-grace`; strict mode halts on any pending request. Set `--slo-e2e-ms` to report per-request SLO goodput.
 
 Ends with the goodput knee and a fleet-size estimate. Reverse `--levels` to confirm order doesn't matter.
 
@@ -42,19 +38,26 @@ Ends with the goodput knee and a fleet-size estimate. Reverse `--levels` to conf
 | `--levels` | `0.1,…,5` | Offered QPS points |
 | `--dur` | `90` | Seconds per level; longer → stabler tails |
 | `--warmup` | `0` | Discard first N seconds from all metrics |
-| `--drain-grace` | `300` | Max seconds to wait for in-flight after each level, then cancel |
+| `--drain-grace` | `300` | Bounded seconds to wait after arrivals stop |
+| `--slo-e2e-ms` | off | Per-request E2E deadline for SLO goodput |
+| `--max-arrival-lag-ms` | `50` | Absolute floor (ms) for arrival-lag budget |
+| `--max-arrival-lag-intervals` | `1.0` | Lag budget in mean inter-arrivals |
+| `--max-pending-frac` | `0` | Strict default; positive value is diagnostic only |
 | `--seed` | `7` | Repeat across seeds for a defensible p95 |
 | `--arrival` | `uniform` | `poisson` or `uniform` |
 | `--mode` | `real` | Cache breaks: `real` / `fixed` (never) / `broken` (every turn) |
 | `--fixed-dist` | off | Same mean-stabilized size schedule every level |
+| `--pool` | `40` | Number of sizes in the fixed schedule |
 | `--stop-on-explode` | off | Stop ramp on congestion (`--explode-e2e-ms`, `--explode-errs`) |
+| `--explode-e2e-ms` | `45000` | E2E p95 threshold for congestion stop |
+| `--explode-errs` | `3` | Error-count threshold for congestion stop |
 | `--affinity` | off | Sticky session header (default `X-Session-Id`; override with `INFERBENCH_SESSION_HEADER`) |
 | `--role` | `heavy` | Size profile: `heavy` or `light` |
 | `--scale` | `1.0` | Scale token sizes (`<1` for dry runs) |
 
 Env: `INFERBENCH_CACHE_FRACTION` (default `0.59`), `INFERBENCH_REASONING_EFFORT`, `INFERBENCH_SESSION_HEADER`. Optional: `INFERBENCH_ENV=/path/to/file` loads `KEY=value` lines into the process (real env vars win). Nothing auto-loads a local `.env`.
 
-`--dur` tip: use `--warmup 30–60`, then hold until you have ~1k steady-state completions (or until sustained/p95 stop moving).
+`--dur` tip: use `--warmup 30–60`, then hold until you have ~1k steady-state completions and stable backlog. A level is not sustained merely because requests eventually drain after arrivals stop.
 
 ## Scripts
 
@@ -69,6 +72,16 @@ Env: `INFERBENCH_CACHE_FRACTION` (default `0.59`), `INFERBENCH_REASONING_EFFORT`
 | `workload.py` | Size distribution + cache composition (`ROLE_PROFILES`) |
 | `providers.py` | OpenAI-compatible client + registry |
 | `plot_scaling.py` | Plots for `scaling_probe.py` CSVs in `docs/data/` (not shipped) |
+
+## Tests
+
+Deterministic open-loop accounting tests use a fake provider and require no network:
+
+```bash
+python tests/test_run_openloop.py
+```
+
+They cover fixed-window completion, tail-in-grace, pending-after-grace, scheduler drops, SLO boundaries, error accounting, warm-up exclusion, and strict versus diagnostic pending policy.
 
 ## Endpoint
 
