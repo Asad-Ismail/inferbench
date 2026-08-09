@@ -8,8 +8,6 @@ Load test for LLM inference endpoints. Reports sustained QPS, TTFT/E2E percentil
 
 Open-loop fires requests at a target QPS regardless of how slow the server is (arrival-driven capacity); closed-loop keeps N concurrent conversations in flight and only issues the next turn when one finishes (`run.py`). Prefer open-loop (`run_openloop.py`) for the goodput knee.
 
-If you find this useful, [star the repo](https://github.com/Asad-Ismail/inferbench) or share it with someone sizing LLM serving.
-
 ## Install
 
 ```
@@ -75,3 +73,18 @@ Env: `INFERBENCH_CACHE_FRACTION` (default `0.59`), `INFERBENCH_REASONING_EFFORT`
 ## Endpoint
 
 Export `<NAME>_BASE_URL`, `<NAME>_MODEL`, `<NAME>_API_KEY` (as in Run), or register the provider in `providers.py`. Edit `ROLE_PROFILES` / `INFERBENCH_CACHE_FRACTION` to match your traffic before sizing. For cache affinity, set `INFERBENCH_SESSION_HEADER` (or `<NAME>_SESSION_HEADER`) to whatever your router expects.
+
+## Contributing
+
+Contributions are welcome — bug fixes, clearer docs, new probes, provider quirks, and measurement methodology improvements.
+
+1. Fork the repo and create a branch from `main`.
+2. Make a focused change (prefer one concern per PR).
+3. Open a pull request against [Asad-Ismail/inferbench](https://github.com/Asad-Ismail/inferbench) with a short summary of *what* changed and *why*.
+4. If the change affects reported metrics, note how you validated it (command + rough expected effect).
+
+Issues for bugs or design questions are also fine before investing in a large PR.
+
+---
+
+If Inferbench helps you size or compare serving stacks, please [star the repository](https://github.com/Asad-Ismail/inferbench) or share it with others doing the same work.
