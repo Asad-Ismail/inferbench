@@ -82,21 +82,36 @@ def ladder_totals(rungs, n, seed=0):
     return out
 
 
+def _van_der_corput(k):
+    """k-th point of the base-2 low-discrepancy sequence: 0, .5, .25, .75, .125, ...
+    Any prefix of it covers [0,1) about as evenly as that many points can."""
+    x, f, r = int(k), 0.5, 0.0
+    while x:
+        r += f * (x & 1)
+        x >>= 1
+        f *= 0.5
+    return r
+
+
 def stratified_totals(role, n):
     """A FIXED, deterministic list of n request sizes spanning the distribution (evenly-spaced
-    quantiles, tail included), reordered so that EVERY PREFIX already averages ~the distribution
-    mean. Greedy mean-stabilization: at each step pick the remaining size that keeps the running
-    mean closest to target. Consequence: a level that completes only N requests still sees mean
-    input ~= the full distribution mean, for ANY N -- so InMean is ~constant across levels
-    regardless of how many each completes, and level comparisons reflect load, not sample weight.
-    The full pass is still the exact stratified distribution; the ordering just balances big vs
-    small early."""
-    vals = [quantile_at(ROLE_PROFILES[role]["total"], (i + 0.5) / n) for i in range(n)]
-    target = sum(vals) / len(vals)
-    remaining, ordered, s = list(vals), [], 0.0
-    for k in range(len(vals)):
-        best = min(remaining, key=lambda v: abs((s + v) / (k + 1) - target))
-        ordered.append(best); remaining.remove(best); s += best
+    quantiles, tail included), so the heavy-tailed SHAPE is preserved exactly while the set of
+    sizes is pinned -- every level walks the identical schedule and cannot draw a luckier
+    sample than its neighbour.
+
+    Dealt in van der Corput order so EVERY PREFIX is spread across the whole quantile range.
+    That matters because levels differ in length, and a prefix has to be representative in
+    SHAPE, not just in mean. Ordering greedily on the running mean gets the mean right but
+    front-loads mid-sizes: the first 80 of 120 then contain no small and no very large
+    requests at all, which is the same sample-mix bias the stratification exists to remove.
+    """
+    prof = ROLE_PROFILES[role]["total"]
+    remaining, ordered = list(range(n)), []
+    for k in range(n):
+        target = _van_der_corput(k)
+        s = min(remaining, key=lambda i: abs((i + 0.5) / n - target))
+        remaining.remove(s)
+        ordered.append(quantile_at(prof, (s + 0.5) / n))
     return ordered
 
 

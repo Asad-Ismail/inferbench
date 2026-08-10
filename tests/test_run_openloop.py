@@ -236,3 +236,46 @@ def test_ladder_takes_precedence_over_fixed_dist():
     sizes = W.ladder_totals(LADDER, 12, seed=1)
     assert set(sizes) == set(LADDER)
     assert set(W.stratified_totals("heavy", 12)) != set(LADDER)
+
+
+def _band(v):
+    for hi in (20e3, 50e3, 100e3, 200e3, 400e3):
+        if v < hi:
+            return hi
+    return 1e18
+
+
+def test_stratified_keeps_the_real_distribution_shape():
+    """The point of stratifying rather than laddering: the size mix must still be the
+    profile's own heavy-tailed mix, not a flat one."""
+    import random
+    rng = random.Random(5)
+    drawn = [W.sample_pct(W.ROLE_PROFILES["heavy"]["total"], rng) for _ in range(60_000)]
+    sched = W.stratified_totals("heavy", 120)
+    for hi in (20e3, 50e3, 100e3, 200e3, 400e3, 1e18):
+        want = sum(1 for v in drawn if _band(v) == hi) / len(drawn)
+        got = sum(1 for v in sched if _band(v) == hi) / len(sched)
+        assert abs(got - want) < 0.03, (hi, got, want)
+
+
+def test_every_level_sees_the_same_size_mix_whatever_its_length():
+    """Levels differ in length -- a fast level completes more conversations than a slow one --
+    so the mix a level actually sees must not depend on how far it got. Guards the ordering,
+    not the set: an ordering that front-loads mid-sizes passes a whole-schedule check and
+    still hands the two levels different workloads.
+
+    Checked from one full cycle upward, which is the operating regime (levels run hundreds of
+    conversations against a 120-long schedule). Below one cycle the mean still lags, because a
+    heavy tail puts most of the mean in a handful of rare large sizes that no ordering can
+    deliver early without distorting the mix.
+    """
+    sched = W.stratified_totals("heavy", 120)
+    full = {hi: sum(1 for v in sched if _band(v) == hi) / len(sched)
+            for hi in (20e3, 50e3, 100e3, 200e3, 400e3, 1e18)}
+    mean_full = sum(sched) / len(sched)
+    for n in (120, 300, 650, 1600):
+        pref = [sched[i % len(sched)] for i in range(n)]
+        for hi, want in full.items():
+            got = sum(1 for v in pref if _band(v) == hi) / n
+            assert abs(got - want) < 0.01, (n, hi, got, want)
+        assert abs((sum(pref) / n) / mean_full - 1) < 0.03, (n, sum(pref) / n)
