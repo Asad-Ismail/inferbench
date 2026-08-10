@@ -107,14 +107,8 @@ Export `<NAME>_BASE_URL`, `<NAME>_MODEL`, `<NAME>_API_KEY` (as in Run), or regis
 
 ## Contributing
 
-Contributions are welcome — bug fixes, clearer docs, new probes, provider quirks, and measurement methodology improvements.
-
-1. Fork the repo and create a branch from `main`.
-2. Make a focused change (prefer one concern per PR).
-3. Open a pull request against [Asad-Ismail/inferbench](https://github.com/Asad-Ismail/inferbench) with a short summary of *what* changed and *why*.
-4. If the change affects reported metrics, note how you validated it (command + rough expected effect).
-
-Issues for bugs or design questions are also fine before investing in a large PR.
+Contributions are welcome: open an issue or send a focused pull request.
+For measurement changes, include the command you used and what you observed.
 
 ---
 
