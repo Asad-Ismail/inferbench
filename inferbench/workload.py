@@ -53,6 +53,35 @@ def sample_pct(points, rng):
     return quantile_at(points, rng.random())
 
 
+def ladder_totals(rungs, n, seed=0):
+    """A FIXED, deterministic list of n request sizes dealt from `rungs`, where every
+    consecutive block of len(rungs) entries contains each rung exactly once, shuffled within
+    the block so the order is not a repeating pattern. n is rounded up to a whole number of
+    blocks, so cycling the list keeps the mix exactly balanced for any request count.
+
+    Differs from stratified_totals, which samples evenly-spaced QUANTILES and therefore
+    inherits the distribution's shape -- the tail stays as rare as it is in production (~4%
+    above 400k on the default profile). A ladder gives every rung an EQUAL share instead.
+    Use it when the largest requests dominate the SLO and the natural tail is too thin to
+    measure: it fixes both the "each level rolled its own dice" ambiguity and the "the
+    slowest traffic is the least sampled" problem in one step.
+
+    Cost: the size mix is deliberately NOT representative of production traffic, so pooled
+    medians from a ladder run describe the ladder. Compare per-rung, not pooled.
+    """
+    rungs = [float(r) for r in rungs]
+    if not rungs:
+        raise ValueError("ladder_totals needs at least one rung")
+    k = len(rungs)
+    blocks = max(1, -(-int(n) // k))
+    out = []
+    for b in range(blocks):
+        deck = list(rungs)
+        random.Random(f"ladder:{seed}:{b}").shuffle(deck)
+        out += deck
+    return out
+
+
 def stratified_totals(role, n):
     """A FIXED, deterministic list of n request sizes spanning the distribution (evenly-spaced
     quantiles, tail included), reordered so that EVERY PREFIX already averages ~the distribution

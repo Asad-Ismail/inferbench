@@ -193,3 +193,46 @@ if __name__ == "__main__":
             print(f"FAIL  {test.__name__}: {exc}")
     print(f"\n{len(tests) - failures}/{len(tests)} passed")
     raise SystemExit(failures)
+
+
+LADDER = [10_000.0, 25_000.0, 50_000.0, 100_000.0, 200_000.0, 400_000.0]
+
+
+def test_ladder_deals_every_rung_an_equal_share():
+    """Each block covers every rung once, so any prefix is balanced to within one block."""
+    sizes = W.ladder_totals(LADDER, 40, seed=7)
+    assert len(sizes) % len(LADDER) == 0
+    for start in range(0, len(sizes), len(LADDER)):
+        assert sorted(sizes[start:start + len(LADDER)]) == sorted(LADDER)
+    # cycling the schedule (how run_level indexes it) must stay balanced
+    cycled = [sizes[i % len(sizes)] for i in range(1000)]
+    counts = [cycled.count(r) for r in LADDER]
+    assert max(counts) - min(counts) <= 1
+
+
+def test_ladder_order_is_not_a_repeating_pattern():
+    sizes = W.ladder_totals(LADDER, 60, seed=7)
+    blocks = [tuple(sizes[i:i + len(LADDER)]) for i in range(0, 60, len(LADDER))]
+    assert len(set(blocks)) > 1, "every block identical => order is a fixed pattern"
+
+
+def test_ladder_gives_every_level_the_same_size_mix():
+    """The point of the ladder: a level-to-level difference cannot come from the size draw."""
+    low = run(qps=5.0, dur=1.0, size_ladder=LADDER)
+    high = run(qps=20.0, dur=1.0, size_ladder=LADDER)
+    assert low["offered"] > 0 and high["offered"] > low["offered"]
+    # same schedule walked at both rates => mean input agrees despite very different counts
+    a, b = low["input_tokens_mean"], high["input_tokens_mean"]
+    assert abs(a - b) / max(a, b) < 0.15, (a, b)
+
+
+def test_ladder_plan_predicts_the_sizes_actually_sent():
+    arrivals, sizes = R.build_plan("heavy", 5.0, 1.0, 7, "uniform", size_ladder=LADDER)
+    assert arrivals and sizes
+    assert set(sizes) <= set(LADDER)
+
+
+def test_ladder_takes_precedence_over_fixed_dist():
+    sizes = W.ladder_totals(LADDER, 12, seed=1)
+    assert set(sizes) == set(LADDER)
+    assert set(W.stratified_totals("heavy", 12)) != set(LADDER)

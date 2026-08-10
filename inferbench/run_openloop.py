@@ -42,7 +42,7 @@ def pending_tolerance(offered, max_pending_frac):
 
 PLAN_FIELDS = ["offered_qps", "kind", "idx", "value"]
 
-def build_plan(role, qps, dur, seed, arrival, fixed_dist=False, pool=40):
+def build_plan(role, qps, dur, seed, arrival, fixed_dist=False, pool=40, size_ladder=None):
     """Arrival times and cold-conversation sizes a level is ABOUT to produce.
 
     Uses throwaway Random instances seeded identically to the live streams, so this predicts
@@ -66,7 +66,10 @@ def build_plan(role, qps, dur, seed, arrival, fixed_dist=False, pool=40):
         arrivals.append(t)
     # worst case every arrival is cold, so plan that many sizes (+ headroom)
     n = len(arrivals) + 8
-    if fixed_dist:
+    if size_ladder:
+        sizes = W.ladder_totals(size_ladder, pool, seed)
+        sizes = [sizes[i % len(sizes)] for i in range(n)]
+    elif fixed_dist:
         sizes = W.stratified_totals(role, pool)
         sizes = [sizes[i % len(sizes)] for i in range(n)]
     else:
@@ -134,7 +137,7 @@ class Conv:
 async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, arrival,
                     fixed_dist=False, pool=40, warmup=0.0, drain_grace=300.0,
                     slo_e2e_ms=None, max_arrival_lag_ms=50.0, max_arrival_lag_intervals=1.0,
-                    max_turns=None, request_log=None, plan_log=None):
+                    max_turns=None, request_log=None, plan_log=None, size_ladder=None):
     # Two independent, per-level RNG streams. A single shared stream fed BOTH the Poisson
     # arrivals AND the conversation seeds, but the conversation draw only fires when `free`
     # empties (latency-dependent) -> a faster endpoint consumed a different number of draws and
@@ -146,7 +149,14 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
     conv_rng = random.Random(f"conv:{seed}:{qps}")
     # --fixed-dist: every level walks the SAME deterministic stratified size schedule in order,
     # so all levels see the identical input distribution (no per-level "surprise" heavy sample).
-    sizes = W.stratified_totals(role, pool) if fixed_dist else None
+    # --size-ladder takes precedence over --fixed-dist: both pin the schedule, but the ladder
+    # additionally forces an equal share per rung rather than following the distribution shape.
+    if size_ladder:
+        sizes = W.ladder_totals(size_ladder, pool, seed)
+    elif fixed_dist:
+        sizes = W.stratified_totals(role, pool)
+    else:
+        sizes = None
     turn_cap = MAX_TURNS if max_turns is None else max_turns
     cold_n = 0
     lag_threshold_ms = max(max_arrival_lag_ms, max_arrival_lag_intervals * 1000.0 / qps)
@@ -157,7 +167,7 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
         "inflight":0, "inflight_peak":0, "cold_counted":0, "stalled":0,
     }
     if plan_log:
-        arrivals, plan_sizes = build_plan(role, qps, dur, seed, arrival, fixed_dist, pool)
+        arrivals, plan_sizes = build_plan(role, qps, dur, seed, arrival, fixed_dist, pool, size_ladder)
         write_rows(plan_log, [{"offered_qps": qps, "kind": "arrival", "idx": i, "value": v}
                               for i, v in enumerate(arrivals)]
                            + [{"offered_qps": qps, "kind": "conv_total", "idx": i, "value": v}
@@ -317,6 +327,11 @@ async def main():
     ap.add_argument("--fixed-dist",dest="fixed_dist",action="store_true",
                     help="every level walks the same deterministic stratified size schedule (fair level comparison)")
     ap.add_argument("--pool",type=int,default=40,help="size of the fixed stratified schedule")
+    ap.add_argument("--size-ladder",dest="size_ladder",default="",
+                    help="comma-separated token sizes, e.g. 10000,25000,50000,100000,200000,400000. "
+                         "Deals conversation sizes from these rungs in shuffled blocks so every "
+                         "level sees an identical mix AND every rung gets an equal share. Unlike "
+                         "--fixed-dist the mix is not distribution-shaped, so compare per-rung.")
     ap.add_argument("--warmup",type=float,default=0.0,
                     help="seconds of warm-up to discard from all metrics (measure steady state only)")
     ap.add_argument("--drain-grace",dest="drain_grace",type=float,default=300.0,
@@ -372,6 +387,7 @@ async def main():
         print(f"error: {e}", file=sys.stderr); sys.exit(2)
     use_affinity = ensure_affinity(prov, a.affinity)
     levels=[float(x) for x in a.levels.split(",")]
+    ladder=[float(x) for x in a.size_ladder.split(",")] if a.size_ladder else None
     print(f"OPEN-LOOP ramp | provider={a.provider} role={a.role} mode={a.mode} "
           f"affinity={use_affinity} scale={a.scale} arrival={a.arrival} | {a.dur}s/level | 1 replica\n")
     print(f"{'Offer':>6s} | {'Sched':>5s} | {'N':>5s} | {'GDrop':>5s} | {'LagP95':>7s} | {'LagMax':>7s} | "
@@ -393,11 +409,13 @@ async def main():
                                   drain_grace=a.drain_grace, slo_e2e_ms=a.slo_e2e_ms,
                                   max_arrival_lag_ms=a.max_arrival_lag_ms,
                                   max_arrival_lag_intervals=a.max_arrival_lag_intervals,
-                                  max_turns=a.max_turns, request_log=req_handle, plan_log=a.plan_log)
+                                  max_turns=a.max_turns, request_log=req_handle, plan_log=a.plan_log,
+                                  size_ladder=ladder)
             row.update({
                 "seed": a.seed, "role": a.role, "mode": a.mode, "arrival": a.arrival,
                 "duration_s": a.dur, "warmup_s": a.warmup, "drain_grace_s": a.drain_grace,
                 "slo_e2e_ms": a.slo_e2e_ms, "fixed_dist": a.fixed_dist,
+                "size_ladder": a.size_ladder or "",
                 "max_pending_frac": a.max_pending_frac,
             })
             rows.append(row)
