@@ -73,11 +73,19 @@ class OpenAICompat:
         ttft = None
         first_chunk = None   # time to first streamed chunk of any kind (prefill-done fallback)
         usage = {}
+        finish_reason = None
+        request_id = None
         try:
             async with client.stream("POST", self.url, headers=headers, json=body) as r:
                 if r.status_code != 200:
-                    await r.aread()
-                    return {"ok": False, "code": r.status_code}
+                    body_text = (await r.aread()).decode(errors="replace")[:200]
+                    # A 429 is a quota signal, not a generic failure: Retry-After and the body
+                    # name WHICH limit fired (tokens/min vs requests/min vs concurrency), which
+                    # is the difference between "endpoint is slow" and "you are being metered".
+                    return {"ok": False, "code": r.status_code, "http_status": r.status_code,
+                            "retry_after": r.headers.get("retry-after"),
+                            "request_id": r.headers.get("x-request-id"),
+                            "error_body": body_text}
                 async for line in r.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -90,7 +98,12 @@ class OpenAICompat:
                         continue
                     if first_chunk is None:
                         first_chunk = time.monotonic() - t0
-                    delta = (j.get("choices") or [{}])[0].get("delta", {}) or {}
+                    if request_id is None and j.get("id"):
+                        request_id = j["id"]
+                    choice = (j.get("choices") or [{}])[0]
+                    delta = choice.get("delta", {}) or {}
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
                     # first GENERATED token: content OR reasoning_content (reasoning models)
                     if ttft is None and (delta.get("content") or delta.get("reasoning_content")):
                         ttft = time.monotonic() - t0
@@ -105,6 +118,13 @@ class OpenAICompat:
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "cached_tokens": cached,
                 "completion_tokens": usage.get("completion_tokens"),
+                "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+                # finish_reason "length" means the output cap bound, not that the model stopped.
+                # An HTTP 200 carrying no usage and no finish_reason is a STALLED STREAM, not a
+                # success: it contributes no tokens but does contribute to the latency tail.
+                "finish_reason": finish_reason,
+                "http_status": 200,
+                "request_id": request_id,
             }
         except Exception as e:
             return {"ok": False, "code": type(e).__name__}

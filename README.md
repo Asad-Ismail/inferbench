@@ -48,6 +48,9 @@ Inferbench does not choose a knee or fleet size. The result rows are the measure
 | `--max-arrival-lag-ms` | `50` | Absolute floor (ms) for arrival-lag budget |
 | `--max-arrival-lag-intervals` | `1.0` | Lag budget in mean inter-arrivals |
 | `--max-pending-frac` | `0` | Strict default; positive value is diagnostic only |
+| `--max-turns` | `2` | Turns per conversation before it retires; see Sample size |
+| `--request-log` | off | Write one row per request to a `.csv` |
+| `--plan-log` | off | Write each level's predicted arrivals and sizes before it runs |
 | `--out` | off | Write per-level rows to `.csv`, `.jsonl`, or `.json` |
 | `--append` | off | Append to `--out`, useful for multiple seeds |
 | `--seed` | `7` | Repeat across seeds for a defensible p95 |
@@ -65,6 +68,66 @@ Inferbench does not choose a knee or fleet size. The result rows are the measure
 Env: `INFERBENCH_CACHE_FRACTION` (default `0.59`), `INFERBENCH_REASONING_EFFORT`, `INFERBENCH_SESSION_HEADER`. Optional: `INFERBENCH_ENV=/path/to/file` loads `KEY=value` lines into the process (real env vars win). Nothing auto-loads a local `.env`.
 
 `--dur` tip: use `--warmup 30–60`, then hold until you have ~1k steady-state completions and stable backlog. A level is not sustained merely because requests eventually drain after arrivals stop.
+
+## Per-request log
+
+`--request-log requests.csv` writes one row per request, flushed as each completes. Per-level
+rows cannot separate two things that look identical in aggregate:
+
+- **Throttling from failure.** `http_status` and `retry_after` carry a 429 as a quota signal
+  instead of collapsing it into an error count. On one endpoint this is how a rate limit was
+  found reproducing at 2.74M input tokens per trailing minute across separate runs, far below
+  the quota the key was rated for.
+- **Client queueing from endpoint latency.** `inflight` at dispatch, plus `arrival_lag_ms` and
+  the `cold` flag, show whether a slow number came from the server or from the load generator.
+
+`finish_reason` is worth reading directly: `length` means the output cap bound rather than the
+model stopping. A row with HTTP 200, no `prompt_tokens` and no `finish_reason` is a **stalled
+stream** — it contributes no tokens but its E2E still lands in the tail. Those are counted in
+`stalled_streams`. Filter on `prompt_tokens` before computing any token statistic.
+
+**Report `cache_hit_mean`, not `cache_hit_p50`.** The median is pinned near the design target
+until more than half of requests are cold, then flips to the cold mode, so it is wrong in both
+regimes. Measured on one run it read 0.5885 / 0.5891 / 0.5892 across a 4x change in rate while
+the mean moved 0.375 / 0.420 / 0.453.
+
+## Sample size
+
+Effective sample size is **conversations, not requests**. Input size is constant within a
+conversation, so its 2nd..Nth turns are near-duplicates that cost tokens and buy no precision.
+Bootstrap by conversation; resampling by request treats near-duplicate turns as independent and
+gives intervals roughly 2x too narrow.
+
+`--max-turns` trades duplicate turns for independent size draws at the same request count and
+token spend. Two real runs, 95% CI on TTFT p50 by conversation bootstrap:
+
+```
+  37 requests,   7 conversations -> TTFT p50 5.30s, 95% CI [2.50, 11.16]
+ 486 requests, 129 conversations -> TTFT p50 4.37s, 95% CI [ 3.79,  5.12]
+```
+
+The first spans both passing and failing a 3s SLO. Roughly 250 conversations per level resolves
+a 1s difference. The default of 2 yields 0.508 conversations per request against 0.184 at 8.
+
+The trade-off: turn 1 is always cold, so a lower cap raises cold share, lowers cache hit, and
+raises absolute TTFT. Runs at different `--max-turns` are comparable only size-controlled.
+Use `--max-turns 8` for longer conversations.
+
+## Plan log
+
+`--plan-log plan.csv` writes the arrival times and cold-conversation sizes each level is about
+to produce, before it runs. **It does not change what is sent** — it reads from throwaway
+`Random` copies of the live streams, so it predicts the schedule rather than replacing it.
+
+It confirms the harness offered the workload you configured. Arrivals are fully determined by
+`(seed, qps)`, so a mismatch means the generator fell behind rather than the RNG drifting. A
+seeded Poisson stream at a nominal 0.2 QPS held 139 arrivals in 900s, not 180 — that level
+offered 0.156 QPS, and anything dividing by the nominal rate would understate it by 30%.
+
+Conversation sizes are determined only up to order: the Nth cold conversation always has the
+same size, but how many a level creates depends on latency, because a slow endpoint starves the
+recycle pool and starts more cold, more expensive conversations. Comparing `cold_conversations`
+against the plan measures that drift.
 
 ## Multi-seed summary
 
