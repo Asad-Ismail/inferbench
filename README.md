@@ -1,10 +1,15 @@
 # Inferbench
 
-Load-test a long-context, multi-turn LLM endpoint at a chosen QPS.
+<p align="center">
+  <img src="assets/inferbench-logo.png" alt="Inferbench" width="120">
+</p>
 
-The client fires on schedule. If it falls behind, it drops the late arrival instead of bursting. A request counts as Done only if it finishes before the window ends.
+Load generator for long-context, multi-turn LLM endpoints.
 
-`run.py` keeps N conversations in flight. Use `run_openloop.py` when you care about arrival rate.
+- Open-loop QPS ramp: fire on schedule, drop late arrivals, count in-window completions
+- Closed-loop concurrency ramp (`run.py`)
+- Multi-turn prefix cache with session affinity
+- `--max-ctx` clamp (default `heavy` draws up to 780k tokens)
 
 ## Run
 
@@ -20,12 +25,6 @@ python3 inferbench/run_openloop.py --provider myapi --mode real --affinity \
     --drain-grace 90 --levels 2,4,6,8,10 --fixed-dist --stop-on-explode \
     --out results-seed-7.jsonl
 ```
-
-`--affinity` sends a sticky session header (`X-Session-Id` by default) so prefix cache can hit across turns. Without it, a multi-replica router will miss.
-
-`--max-ctx` clamps every prompt. Default `heavy` draws up to 780k tokens. Against a 32k or 128k model that is errors or silent truncation, not a smaller workload.
-
-`INFERBENCH_CACHE_FRACTION` (default `0.59`) is prompt composition — stable vs fresh — not a traffic-weighted hit. `--mode fixed` means never break, not 100% hit; turn 1 is always cold. `INFERBENCH_ENV=/path` loads `KEY=value` lines; real env vars win. Nothing auto-loads a local `.env`.
 
 Other flags: `--help`.
 
@@ -51,9 +50,13 @@ Latency and tokens are the same population as Done. Drain is leftover work after
 python -m inferbench.summarize results-seed-*.jsonl --out summary.csv
 ```
 
-Median / min / max / spread across seeds.
-
 ## Things that bite
+
+`--affinity` is required on a multi-replica router. It sends a sticky session header (`X-Session-Id` by default; override with `INFERBENCH_SESSION_HEADER`). Without it, prefix cache misses.
+
+`--max-ctx` clamps every prompt. Against a 32k or 128k model, uncapped `heavy` is errors or silent truncation, not a smaller workload.
+
+`INFERBENCH_CACHE_FRACTION` (default `0.59`) is prompt composition — stable vs fresh — not a traffic-weighted hit. `--mode fixed` means never break, not 100% hit; turn 1 is always cold. `INFERBENCH_ENV=/path` loads `KEY=value` lines; real env vars win. Nothing auto-loads a local `.env`.
 
 Defaults are `--dur 90 --warmup 30` and levels from 1 QPS. That is tens of completions, not ~1k. p99 is noise until you have enough in-window samples and Growth ≈ 0.
 
@@ -61,7 +64,7 @@ Defaults are `--dur 90 --warmup 30` and levels from 1 QPS. That is tens of compl
 
 `Dropped > 0` means this process missed the schedule (one asyncio client, 2000 connections). That is often not the endpoint. Any drop halts the ramp.
 
-`locked_hit.py` pins cache-hit by priming a pool, then ramps. A busy pool waits (closed-loop). The `ok/wall` column includes drain. Failed primes abort — a prime that silently failed used to report a locked hit that never landed.
+`locked_hit.py` pins cache-hit by priming a pool, then ramps. A busy pool waits (closed-loop). The `ok/wall` column includes drain. Failed primes abort.
 
 ## Other scripts
 
@@ -71,7 +74,7 @@ Defaults are `--dur 90 --warmup 30` and levels from 1 QPS. That is tens of compl
 - `run.py` — closed-loop concurrency ramp
 - `validate_comp.py` — smoke-check warm-turn cache-hit under affinity
 
-Edit `ROLE_PROFILES` / `INFERBENCH_CACHE_FRACTION` to match your traffic. For cache affinity, set `INFERBENCH_SESSION_HEADER` (or `<NAME>_SESSION_HEADER`) to whatever the router expects.
+Edit `ROLE_PROFILES` / `INFERBENCH_CACHE_FRACTION` to match your traffic.
 
 ## Tests
 

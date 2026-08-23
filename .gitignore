@@ -34,6 +34,7 @@ secrets*
 # Local / generated outputs (do not publish run artifacts)
 *.csv
 *.png
+!assets/*.png
 *.jsonl
 results/
 out/
