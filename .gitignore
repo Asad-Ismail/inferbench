@@ -32,11 +32,8 @@ secrets*
 *~
 
 # Local / generated outputs (do not publish run artifacts)
-docs/data/
-docs/figures/
 *.csv
 *.png
-!assets/*.png
 *.jsonl
 results/
 out/

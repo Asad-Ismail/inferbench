@@ -1,4 +1,4 @@
-"""Summarize per-level Inferbench result files across seeds without choosing a knee."""
+"""Summarize per-level Inferbench result files across seeds."""
 import argparse
 import csv
 import json
@@ -68,7 +68,7 @@ def write_csv(rows, stream):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Summarize Inferbench CSV, JSONL, or JSON results across seeds; does not grade SLOs or choose a knee."
+        description="Summarize Inferbench CSV, JSONL, or JSON results across seeds."
     )
     parser.add_argument("inputs", nargs="+", help="result files from --out")
     parser.add_argument("--out", help="optional CSV output path; stdout when omitted")

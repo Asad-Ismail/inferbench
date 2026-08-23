@@ -26,41 +26,25 @@ Usage:
   python3 scaling_probe.py --provider myapi --sweep cachehit \
       --context 200000 --hits 0,0.25,0.5,0.59,0.75,0.9,0.95 --repeats 3 --out hit.csv
 
-Requires: providers.py (build_provider). Optional: numpy for the quadratic fit.
+Optional: numpy for the quadratic fit (`pip install numpy`).
 """
 import argparse, asyncio, random, statistics, csv, sys, os
 import httpx
 
 try:
     from inferbench.providers import build_provider, ensure_affinity
+    from inferbench.utils import run_salt, seeded_text
 except ImportError:
     from providers import build_provider, ensure_affinity
+    from utils import run_salt, seeded_text
 
-# Per-RUN salt: mixed into ALL generated text so every run sends content the endpoint has
-# NEVER seen -> a true cache-miss baseline (deterministic seeds alone would hit a prior run's
-# cache and silently inflate cache-hit). Sizes stay seed-deterministic; what reproduces is the
-# scaling RELATIONSHIP + crossover, not literal bytes/latencies. Override with SALT=... to pin.
-RUN_SALT = os.environ.get("SALT") or os.urandom(6).hex()
-
-# Synthetic vocab: one word ~= one token for sizing; verify against endpoint prompt_tokens.
-_VOCAB = ("agent ticket repository state tool plan policy commit diff branch file module "
-          "function request handler cache token context window prefix suffix latency queue "
-          "replica container prompt system message reason review deploy config schema route "
-          "worker session affinity throughput prefill decode buffer scale limit error retry "
-          "customer order invoice search fetch write read update delete query index vector").split()
-
-# Optional theory crossover line (12 * d_model). Set to your model's hidden size.
+SALT = run_salt()
 D_MODEL = int(os.environ.get("INFERBENCH_D_MODEL", "4096"))
 THEORY_CROSSOVER = 12 * D_MODEL
 
 
 def block(approx_tokens, seed):
-    """Deterministic ~approx_tokens-token text from `seed` (same seed -> identical bytes).
-    seed may be any hashable (tuple/int/str); stringified + run-salted so random.Random accepts
-    it AND every run produces globally-unique bytes (true cache-miss baseline)."""
-    rng = random.Random(str((RUN_SALT, seed)))
-    n = max(1, int(approx_tokens))
-    return " ".join(rng.choice(_VOCAB) for _ in range(n))
+    return seeded_text(approx_tokens, seed, SALT)
 
 
 def make_messages(total_tokens, cache_fraction, stable_seed, fresh_seed):
@@ -158,9 +142,9 @@ async def main():
     rng = random.Random(a.seed)
     rows = []
     print(f"SCALING PROBE | provider={a.provider} sweep={a.sweep} repeats={a.repeats} "
-          f"warmup={a.warmup} seed={a.seed} | max_tokens=8 (prefill-isolated)\n", flush=True)
+          f"warmup={a.warmup} seed={a.seed} salt={SALT} | max_tokens=8\n", flush=True)
 
-    async with httpx.AsyncClient(timeout=900, limits=httpx.Limits(max_connections=8)) as client:
+    async with httpx.AsyncClient(timeout=1800, limits=httpx.Limits(max_connections=8)) as client:
         if a.sweep == "context":
             lengths = [int(x) for x in a.lengths.split(",")]
             print(f"context sweep @ fixed cache-hit={a.cache_hit}; theory crossover 12*d_model={THEORY_CROSSOVER}")

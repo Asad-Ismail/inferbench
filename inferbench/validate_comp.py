@@ -26,8 +26,11 @@ async def main():
     ap.add_argument("--convs", type=int, default=4)
     ap.add_argument("--turns", type=int, default=3)
     ap.add_argument("--seed", type=int, default=11)
+    ap.add_argument("--max-ctx", type=int, default=0,
+                    help="clamp every prompt to this many tokens (default heavy tail is 780k)")
     a = ap.parse_args()
     W.SIZE_SCALE = 1.0
+    W.MAX_CTX = a.max_ctx
     try:
         prov = build_provider(a.provider)
     except ValueError as e:
@@ -36,7 +39,7 @@ async def main():
     ensure_affinity(prov, True)
     target = W.CACHE_FRACTION
     rng = random.Random(a.seed)
-    async with httpx.AsyncClient(timeout=600) as client:
+    async with httpx.AsyncClient(timeout=1800) as client:
         rows = []
         for c in range(a.convs):
             conv = W.Conversation(a.role, random.Random(rng.random()))

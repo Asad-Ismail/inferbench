@@ -1,7 +1,6 @@
-"""Long-context, multi-turn LLM serving benchmark for any OpenAI-compatible endpoint:
-fixed-window completion QPS, bounded-drain diagnostics, TTFT/E2E percentiles,
-prefix-cache hit rate, and structured response-curve output.
+"""Open-loop load generator for long-context, multi-turn LLM endpoints.
 
+Offers a target QPS, drops late arrivals, counts completions inside a fixed window.
 See README.md for usage.
 """
 
