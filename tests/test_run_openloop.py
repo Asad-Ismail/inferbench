@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from inferbench import run_openloop as R
 from inferbench import summarize as S
 from inferbench import workload as W
+from inferbench.providers import resolve_token_param, token_budget_fields
 from inferbench.utils import pct
 
 W.SIZE_SCALE = 0.002
@@ -97,6 +98,20 @@ def test_errors_and_warmup():
     full = run(qps=10.0, dur=2.0)
     warm = run(qps=10.0, dur=2.0, warmup=1.0)
     assert 0 < warm["fired"] < full["fired"]
+
+
+def test_token_budget_fields():
+    assert token_budget_fields(230) == {"max_tokens": 230, "max_completion_tokens": 230}
+    assert token_budget_fields(8, "max_tokens") == {"max_tokens": 8}
+    assert token_budget_fields(8, "max_completion_tokens") == {"max_completion_tokens": 8}
+    try:
+        token_budget_fields(8, "max_output_tokens")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+    assert resolve_token_param(None, "", "both") == "both"
+    assert resolve_token_param("max_tokens", "both") == "max_tokens"
 
 
 def test_max_ctx_clamps_totals():

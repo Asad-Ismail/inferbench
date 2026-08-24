@@ -19,13 +19,13 @@ import httpx
 
 try:
     from inferbench import workload as W
-    from inferbench.providers import build_provider, ensure_affinity
+    from inferbench.providers import TOKEN_PARAMS, build_provider, ensure_affinity
     from inferbench.utils import (
         error_str, fmt_ms, fmt_num, next_interval, pct, run_salt, seeded_text,
     )
 except ImportError:
     import workload as W
-    from providers import build_provider, ensure_affinity
+    from providers import TOKEN_PARAMS, build_provider, ensure_affinity
     from utils import error_str, fmt_ms, fmt_num, next_interval, pct, run_salt, seeded_text
 
 SALT = run_salt()
@@ -173,10 +173,12 @@ async def main():
                     help="with --max-ctx, scale the sub-cap dist so the mean hits this")
     ap.add_argument("--timeout", type=float, default=1800,
                     help="per-request HTTP timeout in seconds; 0 disables")
+    ap.add_argument("--token-param", dest="token_param", choices=TOKEN_PARAMS, default=None,
+                    help="output cap field(s); default both (openai provider uses max_completion_tokens)")
     ap.add_argument("--drain-grace", type=float, default=300.0)
     a = ap.parse_args()
     try:
-        prov = build_provider(a.provider)
+        prov = build_provider(a.provider, token_param=a.token_param)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
@@ -210,7 +212,8 @@ async def main():
         mode = "stratified"
     ctxs = sorted(c.ctx for c in pool)
     print(f"LOCKED HIT={a.hit} | provider={a.provider} pool={a.pool} {mode} "
-          f"arrival={a.arrival} timeout={a.timeout or 'off'} | {a.dur}s/level | salt={SALT}")
+          f"arrival={a.arrival} timeout={a.timeout or 'off'} token-param={prov.token_param} "
+          f"| {a.dur}s/level | salt={SALT}")
     print(f"pool ctx tokens: mean={sum(ctxs)//len(ctxs):,} p50={pct(ctxs,.5):.0f} "
           f"p95={pct(ctxs,.95):.0f} min={ctxs[0]:.0f} max={ctxs[-1]:.0f}")
     print("note: busy pool waits (does not drop); ok/wall includes drain — not DoneQPS")

@@ -62,6 +62,8 @@ Defaults are `--dur 90 --warmup 30` and levels from 1 QPS. That is tens of compl
 
 `--timeout` defaults to 1800s. The heavy output tail is 35k tokens; one decode can outlast a shorter timeout and look like an outage. `--timeout 0` disables it.
 
+The output cap is sent as both `max_tokens` and `max_completion_tokens` (TokenHub and others renamed the field; omit it and they decode to the model max). If the API 400s, `--token-param max_tokens` or `max_completion_tokens`. The `openai` provider already sends only `max_completion_tokens`.
+
 `Dropped > 0` means this process missed the schedule (one asyncio client, 2000 connections). That is often not the endpoint. Any drop halts the ramp.
 
 `locked_hit.py` pins cache-hit by priming a pool, then ramps. A busy pool waits (closed-loop). The `ok/wall` column includes drain. Failed primes abort.

@@ -12,11 +12,11 @@ import httpx
 
 try:
     from inferbench import workload as W
-    from inferbench.providers import build_provider, ensure_affinity
+    from inferbench.providers import TOKEN_PARAMS, build_provider, ensure_affinity
     from inferbench.utils import MAX_TURNS, error_str, pct
 except ImportError:
     import workload as W
-    from providers import build_provider, ensure_affinity
+    from providers import TOKEN_PARAMS, build_provider, ensure_affinity
     from utils import MAX_TURNS, error_str, pct
 
 
@@ -88,18 +88,21 @@ async def main():
                     help="send a session id for cache affinity")
     ap.add_argument("--max-ctx", type=int, default=0,
                     help="clamp every prompt to this many tokens (default heavy tail is 780k)")
+    ap.add_argument("--token-param", dest="token_param", choices=TOKEN_PARAMS, default=None,
+                    help="output cap field(s); default both (openai provider uses max_completion_tokens)")
     a = ap.parse_args()
     W.SIZE_SCALE = a.scale
     W.MAX_CTX = a.max_ctx
     try:
-        prov = build_provider(a.provider)
+        prov = build_provider(a.provider, token_param=a.token_param)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
     use_affinity = ensure_affinity(prov, a.affinity)
     levels = [int(x) for x in a.levels.split(",")]
     print(f"closed-loop | provider={a.provider} role={a.role} mode={a.mode} "
-          f"affinity={use_affinity} scale={a.scale} | {a.dur}s/level\n",
+          f"affinity={use_affinity} scale={a.scale} token-param={prov.token_param} "
+          f"| {a.dur}s/level\n",
           flush=True)
     for lv in levels:
         await run_level(prov, a.role, a.mode, lv, a.dur, a.seed, use_affinity)

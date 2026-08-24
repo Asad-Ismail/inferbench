@@ -11,6 +11,31 @@ import time
 
 REASONING_EFFORT = os.environ.get("INFERBENCH_REASONING_EFFORT") or None
 DEFAULT_SESSION_HEADER = "X-Session-Id"
+TOKEN_PARAMS = ("both", "max_tokens", "max_completion_tokens")
+
+
+def token_budget_fields(n, token_param="both"):
+    """Fields that cap decode. TokenHub and others renamed max_tokens.
+
+    Default sends both so a stack that honors only one still gets the sampled
+    cap. Strict APIs that 400: pass max_tokens or max_completion_tokens alone.
+    """
+    n = int(n)
+    if token_param == "both":
+        return {"max_tokens": n, "max_completion_tokens": n}
+    if token_param in ("max_tokens", "max_completion_tokens"):
+        return {token_param: n}
+    raise ValueError(f"token_param must be one of {TOKEN_PARAMS}, got {token_param!r}")
+
+
+def resolve_token_param(*choices):
+    for choice in choices:
+        if not choice:
+            continue
+        if choice not in TOKEN_PARAMS:
+            raise ValueError(f"token_param must be one of {TOKEN_PARAMS}, got {choice!r}")
+        return choice
+    return "both"
 
 
 def _env():
@@ -29,24 +54,22 @@ class OpenAICompat:
     """OpenAI /v1/chat/completions streaming. base_url should include /v1."""
 
     def __init__(self, name, base_url, model, headers, extra_body=None, session_header=None,
-                 token_param="max_tokens"):
+                 token_param="both"):
         self.name = name
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model = model
         self.headers = {"Content-Type": "application/json", **headers}
         self.extra_body = extra_body or {}
         self.session_header = session_header
-        # Some OpenAI-compat servers silently ignore max_completion_tokens (OutMax == 65536).
-        # Prefer max_tokens unless the provider requires max_completion_tokens.
-        self.token_param = token_param
+        self.token_param = resolve_token_param(token_param)
 
     async def run_turn(self, client, messages, max_tokens, session_id=None):
         body = {
             "model": self.model,
             "messages": messages,
-            self.token_param: max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
+            **token_budget_fields(max_tokens, self.token_param),
             **({"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else {}),
             **self.extra_body,
         }
@@ -114,7 +137,7 @@ def _require_env(e, key, what):
     return val
 
 
-def build_provider(name):
+def build_provider(name, token_param=None):
     """Build a provider from the PROVIDERS registry, or from <NAME>_* env vars if unknown."""
     e = _env()
     cfg = PROVIDERS.get(name)
@@ -144,11 +167,18 @@ def build_provider(name):
         or e.get("INFERBENCH_SESSION_HEADER")
     )
     model = e.get(f"{p}_MODEL", cfg["model"])
+    token_param = resolve_token_param(
+        token_param,
+        e.get(f"{p}_TOKEN_PARAM"),
+        e.get("INFERBENCH_TOKEN_PARAM"),
+        cfg.get("token_param"),
+        "both",
+    )
     return OpenAICompat(
         name, base, model, headers,
         extra_body=cfg.get("extra_body"),
         session_header=session_header,
-        token_param=cfg.get("token_param", "max_tokens"),
+        token_param=token_param,
     )
 
 

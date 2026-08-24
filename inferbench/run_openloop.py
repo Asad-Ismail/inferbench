@@ -14,13 +14,13 @@ import httpx
 
 try:
     from inferbench import workload as W
-    from inferbench.providers import build_provider, ensure_affinity
+    from inferbench.providers import TOKEN_PARAMS, build_provider, ensure_affinity
     from inferbench.utils import (
         MAX_TURNS, error_str, fmt_k, fmt_ms, next_interval, pct,
     )
 except ImportError:
     import workload as W
-    from providers import build_provider, ensure_affinity
+    from providers import TOKEN_PARAMS, build_provider, ensure_affinity
     from utils import MAX_TURNS, error_str, fmt_k, fmt_ms, next_interval, pct
 
 def pending_tolerance(offered, max_pending_frac):
@@ -197,6 +197,8 @@ async def main():
                     help="seconds of warm-up to discard from all metrics (measure steady state only)")
     ap.add_argument("--max-ctx",type=int,default=0,
                     help="clamp every prompt to this many tokens (default heavy tail is 780k)")
+    ap.add_argument("--token-param",dest="token_param",choices=TOKEN_PARAMS,default=None,
+                    help="output cap field(s); default both (openai provider uses max_completion_tokens)")
     ap.add_argument("--timeout",type=float,default=1800,
                     help="per-request HTTP timeout in seconds; 0 disables (heavy decode tails can exceed 600s)")
     ap.add_argument("--drain-grace",dest="drain_grace",type=float,default=300.0,
@@ -232,14 +234,15 @@ async def main():
     W.SIZE_SCALE=a.scale
     W.MAX_CTX=a.max_ctx
     try:
-        prov=build_provider(a.provider)
+        prov=build_provider(a.provider, token_param=a.token_param)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr); sys.exit(2)
     use_affinity = ensure_affinity(prov, a.affinity)
     levels=[float(x) for x in a.levels.split(",")]
     print(f"OPEN-LOOP ramp | provider={a.provider} role={a.role} mode={a.mode} "
           f"affinity={use_affinity} scale={a.scale} arrival={a.arrival} "
-          f"max-ctx={a.max_ctx or 'off'} timeout={a.timeout or 'off'} | {a.dur}s/level")
+          f"max-ctx={a.max_ctx or 'off'} timeout={a.timeout or 'off'} "
+          f"token-param={prov.token_param} | {a.dur}s/level")
     if a.warmup == 0:
         print("note: --warmup 0; cold start is in the numbers")
     if not a.max_ctx and a.role == "heavy":
@@ -263,7 +266,7 @@ async def main():
                 "seed": a.seed, "role": a.role, "mode": a.mode, "arrival": a.arrival,
                 "duration_s": a.dur, "warmup_s": a.warmup, "drain_grace_s": a.drain_grace,
                 "fixed_dist": a.fixed_dist, "max_pending_frac": a.max_pending_frac,
-                "max_ctx": a.max_ctx, "timeout_s": a.timeout,
+                "max_ctx": a.max_ctx, "timeout_s": a.timeout, "token_param": prov.token_param,
             })
             rows.append(row)
             left_tol = pending_tolerance(row["fired"], a.max_pending_frac)
