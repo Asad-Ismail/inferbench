@@ -96,7 +96,7 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
     cold_n = 0
     lag_threshold_ms = max(max_arrival_lag_ms, max_arrival_lag_intervals * 1000.0 / qps)
     st = {
-        "ttft":[], "e2e":[], "hit":[], "ptok":[], "otok":[],
+        "ttft":[], "e2e":[], "hit":[], "ptok":[], "otok":[], "dec":[], "c_sum":0, "p_sum":0,
         "events":[], "all_events":[], "fire_t":[], "all_fire_t":[],
         "arrival_lag":[], "scheduled":0, "dropped":0,
     }
@@ -117,9 +117,19 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
                 st["ttft"].append(r.get("ttft")); st["e2e"].append(r.get("e2e"))
                 pt,ct = r.get("prompt_tokens"), r.get("cached_tokens")
                 if pt: st["ptok"].append(pt)
-                if pt and ct is not None: st["hit"].append(ct/pt)
+                if pt and ct is not None:
+                    st["hit"].append(ct/pt)
+                    # token-weighted aggregate, the same definition as prod SUM(cached)/SUM(prompt);
+                    # the per-request median alone hides cache-broken and cold turns.
+                    st["c_sum"] += ct; st["p_sum"] += pt
                 ot = r.get("completion_tokens")
                 if ot: st["otok"].append(ot)
+                # Decode throughput (tok/s) = output tokens / (e2e - ttft). First-class metric:
+                # e2e is decode-bound on long outputs, so a slow-decoding endpoint must be
+                # visible even when the sampled output is short.
+                tt, ee = r.get("ttft"), r.get("e2e")
+                if ot and tt is not None and ee is not None and ee > tt:
+                    st["dec"].append(ot / (ee - tt))
         if cv.turns < MAX_TURNS:
             free.append(cv)
     if qps <= 0:
@@ -188,10 +198,11 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
     errors = {}
     for e in events:
         if not e["ok"]:
-            errors[e["code"]] = errors.get(e["code"], 0) + 1
+            errors[str(e["code"])] = errors.get(str(e["code"]), 0) + 1
     err = sum(1 for e in events if not e["ok"])
     out_p50 = pct(st["otok"], .5)
     out_max = max(st["otok"]) if st["otok"] else None
+    dec_p50 = pct(st["dec"], .5)
     in_p50 = pct(st["ptok"], .5)
     in_mean = (sum(st["ptok"]) / len(st["ptok"])) if st["ptok"] else None
     lag_p95 = pct(st["arrival_lag"], .95)
@@ -202,7 +213,7 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
           f"{fmt_k(in_p50):>6s} | {fmt_k(in_mean):>6s} | "
           f"{fmt_ms(pct(st['ttft'],.5)):>8s} | {fmt_ms(pct(st['ttft'],.95)):>8s} | {fmt_ms(pct(st['ttft'],.99)):>8s} | "
           f"{fmt_ms(pct(st['e2e'],.5)):>8s} | {fmt_ms(pct(st['e2e'],.95)):>9s} | {fmt_ms(pct(st['e2e'],.99)):>9s} | "
-          f"{(out_p50 or 0):>7.0f} | {(pct(st['hit'],.5) or 0):>9.3f} | {error_str(errors):>6s}",
+          f"{(out_p50 or 0):>7.0f} | {(dec_p50 or 0):>7.0f} | {(pct(st['hit'],.5) or 0):>9.3f} | {(st['c_sum']/st['p_sum'] if st['p_sum'] else 0):>8.3f} | {error_str(errors):>6s}",
           flush=True)
     return {"offered_qps": qps, "done_qps": done_qps,
             "backlog": backlog, "backlog_growth": backlog_growth,
@@ -214,8 +225,8 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
             "ttft_p50_s": pct(st["ttft"],.5), "ttft_p95_s": pct(st["ttft"],.95), "ttft_p99_s": pct(st["ttft"],.99),
             "e2e_p50_s": pct(st["e2e"],.5), "e2e_p95_s": pct(st["e2e"],.95), "e2e_p99_s": pct(st["e2e"],.99),
             "error_count": err, "error_counts": errors,
-            "output_tokens_p50": out_p50, "output_tokens_max": out_max,
-            "input_tokens_p50": in_p50, "input_tokens_mean": in_mean, "cache_hit_p50": pct(st["hit"],.5),
+            "output_tokens_p50": out_p50, "output_tokens_max": out_max, "decode_tps_p50": dec_p50,
+            "input_tokens_p50": in_p50, "input_tokens_mean": in_mean, "cache_hit_p50": pct(st["hit"],.5), "cache_hit_agg": (st["c_sum"]/st["p_sum"]) if st["p_sum"] else None,
             "fired": fired, "done": done}
 
 async def main():
@@ -292,7 +303,7 @@ async def main():
     print(f"{'OfferedQPS':>10s} | {'Sched':>5s} | {'Fired':>5s} | {'Dropped':>7s} | {'LagP95':>7s} | {'LagMax':>7s} | "
           f"{'Done':>5s} | {'DoneQPS':>7s} | {'Backlog':>7s} | {'Growth':>6s} | {'Drain':>5s} | {'Left':>4s} | "
           f"{'InP50':>6s} | {'InMean':>6s} | {'TTFTp50':>8s} | {'TTFTp95':>8s} | {'TTFTp99':>8s} | "
-          f"{'E2Ep50':>8s} | {'E2Ep95':>9s} | {'E2Ep99':>9s} | {'OutP50':>7s} | {'CacheHit':>9s} | {'Errors':>6s}   (in=tok, lat=ms)")
+          f"{'E2Ep50':>8s} | {'E2Ep95':>9s} | {'E2Ep99':>9s} | {'OutP50':>7s} | {'DecTP/s':>7s} | {'CacheHit':>9s} | {'CacheAgg':>8s} | {'Errors':>6s}   (in=tok, lat=ms)")
     print("-"*208)
     rows=[]
     timeout = None if a.timeout == 0 else a.timeout
