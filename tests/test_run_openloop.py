@@ -152,6 +152,37 @@ def test_structured_output_and_cross_seed_summary():
     assert round(summary[0]["e2e_p95_s_spread"], 6) == 0.2
 
 
+def test_stabilization_verdict_is_sample_aware():
+    """Steady state = backlog not growing; the drift test only bites with enough samples.
+    Anchored on a real case: 1 QPS x 60s gives ~62 completions whose 45% half-vs-half drift
+    is pure noise while the backlog is draining -- that must count as stable."""
+    assert R.stabilization_verdict(62, 0.45, -3, 60, 0.20) == (True, True)
+    assert R.stabilization_verdict(62, 0.10, 30, 60, 0.20)[0] is False   # backlog grows: unstable
+    assert R.stabilization_verdict(200, 0.08, 2, 200, 0.20) == (True, False)
+    assert R.stabilization_verdict(200, 0.35, 0, 200, 0.20)[0] is False  # real drift
+    assert R.stabilization_verdict(300, 0.05, 40, 300, 0.20)[0] is False # backlog past tolerance
+
+
+def test_level_duration_auto_sizes_to_min_samples():
+    base, warm = 90, 30
+    assert R.level_duration(10, base, warm) == 90                    # high QPS: base wins
+    d1 = R.level_duration(1, base, warm)
+    assert d1 > base and (d1 - warm) * 1 >= R.STAB_MIN_SAMPLES       # 1 QPS: window*qps >= 100
+    assert R.level_duration(0.001, base, warm) == R.STAB_MAX_DUR     # capped, never hangs
+
+
+def test_stabilized_true_on_steady_state():
+    r = run(provider=FakeProvider(latency=0.02), qps=10.0, dur=2.0, drain_grace=1.0)
+    assert r["stabilized"] is True
+    assert r["stab_drift"] < 0.20 or r["stab_undersampled"]
+
+
+def test_not_stabilized_when_backlog_grows():
+    r = run(provider=FakeProvider(latency=5.0), qps=10.0, dur=1.0, drain_grace=0.2)
+    assert r["stabilized"] is False
+    assert r["backlog_growth"] > 0
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     failures = 0

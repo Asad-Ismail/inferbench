@@ -85,12 +85,17 @@ class OpenAICompat:
                 if r.status_code != 200:
                     await r.aread()
                     return {"ok": False, "code": r.status_code}
+                # Read the stream to its end instead of breaking at [DONE]: an unread body makes
+                # httpx close the connection, so every request pays a new TCP+TLS handshake.
+                # e2e is still taken at [DONE], so draining does not count toward latency.
+                done_at = None
                 async for line in r.aiter_lines():
-                    if not line.startswith("data: "):
+                    if done_at is not None or not line.startswith("data: "):
                         continue
                     d = line[6:]
                     if d == "[DONE]":
-                        break
+                        done_at = time.monotonic()
+                        continue
                     try:
                         j = json.loads(d)
                     except Exception:
@@ -102,7 +107,7 @@ class OpenAICompat:
                         ttft = time.monotonic() - t0
                     if j.get("usage"):
                         usage = j["usage"]
-            e2e = time.monotonic() - t0
+            e2e = (done_at if done_at is not None else time.monotonic()) - t0
             if ttft is None:
                 ttft = first_chunk
             cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
