@@ -52,6 +52,30 @@ def write_rows(path, rows, append=False):
         existing = json.loads(path.read_text()) if append and path.exists() else []
         path.write_text(json.dumps([*existing, *rows], indent=2, sort_keys=True) + "\n")
 
+STAB_MIN_SAMPLES = 100      # completions needed before the throughput-drift test is trustworthy
+STAB_BACKLOG_FRAC = 0.10    # backlog growth (as a fraction of fired) that counts as "growing"
+STAB_MAX_DUR = 900.0        # cap (s) on a single level's auto-extended window
+
+
+def stabilization_verdict(n_ok, stab_drift, backlog_growth, fired, tol):
+    """Steady state = backlog not growing. The half-vs-half throughput-drift check is a
+    refinement that needs enough completions: below STAB_MIN_SAMPLES a short low-QPS window
+    yields pure Poisson/latency noise, so judge by backlog alone. With enough samples the
+    drift tolerance is raised to the noise floor (~2/sqrt(n)). Returns (stabilized, undersampled)."""
+    backlog_growing = backlog_growth > max(3, math.ceil(STAB_BACKLOG_FRAC * fired))
+    if n_ok < STAB_MIN_SAMPLES:
+        return (not backlog_growing, not backlog_growing)
+    eff_tol = max(tol, 2.0 / math.sqrt(n_ok))
+    return ((not backlog_growing) and stab_drift <= eff_tol, False)
+
+
+def level_duration(qps, base_dur, warmup, min_samples=STAB_MIN_SAMPLES, max_dur=STAB_MAX_DUR):
+    """Auto-size a level's duration so the window (dur - warmup) expects >= min_samples
+    completions: long windows at low QPS, base_dur at high QPS, capped so nothing hangs."""
+    needed = warmup + 1.2 * min_samples / max(qps, 1e-9)
+    return min(max(float(base_dur), needed), max_dur)
+
+
 class Conv:
     _n = 0
     def __init__(self, role, rng, total=None):
@@ -62,7 +86,8 @@ class Conv:
 
 async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, arrival,
                     fixed_dist=False, pool=40, warmup=0.0, drain_grace=300.0,
-                    max_arrival_lag_ms=50.0, max_arrival_lag_intervals=1.0):
+                    max_arrival_lag_ms=50.0, max_arrival_lag_intervals=1.0,
+                    stabilize_tol=0.20):
     # Separate RNGs so a faster endpoint does not consume extra size-draws and change
     # the arrival schedule. Per-level seeds keep the Nth cold conv identical across levels.
     arr_rng = random.Random(f"arr:{seed}:{qps}")
@@ -148,6 +173,17 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
         return (sum(1 for f in st["all_fire_t"] if f <= t)
                 - sum(1 for e in st["all_events"] if e["done_t"] <= t))
     backlog_growth = backlog_at(dur) - backlog_at(warmup + meas_win / 3)
+    # Auto-stabilization: split the window in half and compare completion rates. A level is
+    # steady state only if the backlog is not growing and (given enough samples) the drift is
+    # within the noise floor; failed levels are invalid for sizing (too short, or congesting).
+    mid = warmup + meas_win / 2.0
+    half = max(1e-9, meas_win / 2.0)
+    ok_in_win = [e for e in events if e["ok"] and e["done_t"] <= dur]
+    rate_first = sum(1 for e in ok_in_win if e["done_t"] < mid) / half
+    rate_second = sum(1 for e in ok_in_win if e["done_t"] >= mid) / half
+    stab_drift = abs(rate_second - rate_first) / max(rate_first, rate_second, 1e-9)
+    stabilized, stab_undersampled = stabilization_verdict(
+        len(ok_in_win), stab_drift, backlog_growth, fired, stabilize_tol)
     drain_seconds = max(0.0, time.monotonic() - (t0+dur))
     errors = {}
     for e in events:
@@ -170,6 +206,7 @@ async def run_level(client, provider, role, mode, qps, dur, use_affinity, seed, 
           flush=True)
     return {"offered_qps": qps, "done_qps": done_qps,
             "backlog": backlog, "backlog_growth": backlog_growth,
+            "stabilized": stabilized, "stab_drift": stab_drift, "stab_undersampled": stab_undersampled,
             "drain_s": drain_seconds, "left": len(pending),
             "scheduled": st["scheduled"], "dropped": st["dropped"],
             "arrival_lag_p95_ms": (lag_p95 * 1000.0) if lag_p95 is not None else None,
@@ -209,6 +246,8 @@ async def main():
                     help="arrival-lag budget in mean inter-arrivals; effective=max(floor, intervals*1000/qps)")
     ap.add_argument("--max-pending-frac",type=float,default=0.0,
                     help="strict default: any request still running after grace (Left) halts; positive is diagnostic only")
+    ap.add_argument("--stabilize-tol",dest="stabilize_tol",type=float,default=0.20,
+                    help="max throughput drift between window halves for steady state; levels that fail are flagged NOT STABILIZED and are invalid for sizing")
     ap.add_argument("--out",
                     help="write per-level results to .csv, .jsonl, or .json")
     ap.add_argument("--append",action="store_true",
@@ -227,6 +266,8 @@ async def main():
         ap.error("arrival-lag limits must be positive")
     if a.max_pending_frac < 0:
         ap.error("--max-pending-frac must be non-negative")
+    if not 0 < a.stabilize_tol <= 1:
+        ap.error("--stabilize-tol must be in (0, 1]")
     if a.max_ctx < 0:
         ap.error("--max-ctx must be >= 0")
     if a.timeout < 0:
@@ -257,18 +298,30 @@ async def main():
     timeout = None if a.timeout == 0 else a.timeout
     async with httpx.AsyncClient(timeout=timeout, limits=httpx.Limits(max_connections=2000)) as client:
         for lv in levels:
-            row = await run_level(client, prov, a.role, a.mode, lv, a.dur, use_affinity, a.seed, a.arrival,
+            lvl_dur = level_duration(lv, a.dur, a.warmup)
+            if lvl_dur > a.dur + 0.5:
+                print(f"  (offered {lv} QPS: window auto-extended to {lvl_dur:.0f}s "
+                      f"for >= {STAB_MIN_SAMPLES} samples)", flush=True)
+            row = await run_level(client, prov, a.role, a.mode, lv, lvl_dur, use_affinity, a.seed, a.arrival,
                                   fixed_dist=a.fixed_dist, pool=a.pool, warmup=a.warmup,
                                   drain_grace=a.drain_grace,
                                   max_arrival_lag_ms=a.max_arrival_lag_ms,
-                                  max_arrival_lag_intervals=a.max_arrival_lag_intervals)
+                                  max_arrival_lag_intervals=a.max_arrival_lag_intervals,
+                                  stabilize_tol=a.stabilize_tol)
             row.update({
                 "seed": a.seed, "role": a.role, "mode": a.mode, "arrival": a.arrival,
-                "duration_s": a.dur, "warmup_s": a.warmup, "drain_grace_s": a.drain_grace,
+                "duration_s": round(lvl_dur, 1), "warmup_s": a.warmup, "drain_grace_s": a.drain_grace,
                 "fixed_dist": a.fixed_dist, "max_pending_frac": a.max_pending_frac,
                 "max_ctx": a.max_ctx, "timeout_s": a.timeout, "token_param": prov.token_param,
             })
             rows.append(row)
+            if not row["stabilized"]:
+                bt = max(3, math.ceil(STAB_BACKLOG_FRAC * row["fired"]))
+                why = (f"backlog growing (dB=+{row['backlog_growth']} > {bt})"
+                       if row["backlog_growth"] > bt
+                       else f"throughput drift {row['stab_drift']*100:.0f}% over n={row['done']}")
+                print(f"    NOT STABILIZED at offered {lv} QPS: {why}; raise --dur/--warmup -- "
+                      f"this level is invalid for sizing.", flush=True)
             left_tol = pending_tolerance(row["fired"], a.max_pending_frac)
             if row["left"] > left_tol:
                 print(f"\n*** UNRESOLVED at offered {lv} QPS: {row['left']} request(s) "
